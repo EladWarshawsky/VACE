@@ -71,7 +71,7 @@ def multi_band_freq_mix(features: list[torch.Tensor], filters: list[torch.Tensor
         return None
         
     # Initialize a complex tensor to store the fused frequency representation
-    fused_freq = torch.zeros_like(torch.fft.rfftn(features[0], dim=(-3, -2, -1)), dtype=torch.complex64)
+    fused_freq = torch.zeros_like(torch.fft.rfftn(features[0].float(), dim=(-3, -2, -1)), dtype=torch.complex64)
 
     for i, feat in enumerate(features):
         # Transform the feature from spatial to frequency domain using real-to-complex FFT
