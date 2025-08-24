@@ -206,7 +206,11 @@ class FreeLongWanAttentionBlock(BaseWanAttentionBlock):
 
         # Get the original self-attention output from the grandparent's forward pass
         e = kwargs.get('e')
-        norm_x = self.norm1(x).float() * (1 + e[1]) + e[0]
+        if e is not None and len(e) >= 2:
+            norm_x = self.norm1(x).float() * (1 + e[1]) + e[0]
+        else:
+            # Fallback when e doesn't have expected structure
+            norm_x = self.norm1(x).float()
         original_self_attn_out = self.self_attn(norm_x, **{k: v for k, v in kwargs.items() if k in ['seq_lens', 'grid_sizes', 'freqs']})
         
         # The parent's output is: x_processed = x + original_self_attn_out + cross_attn + ffn
