@@ -77,6 +77,7 @@ class FreeLongWanAttentionBlock(BaseWanAttentionBlock):
         """
         Performs sparse attention where queries attend only to a uniformly sampled subset of keyframes.
         This is used for the global branch to reduce computational complexity.
+        Uses chunked processing to avoid memory issues with long sequences.
         """
         num_key_frames = max(1, int(sequence_length * self.sparse_key_frame_ratio))
         key_frame_indices = torch.linspace(0, sequence_length - 1, num_key_frames, dtype=torch.long, device=q.device)
@@ -85,10 +86,25 @@ class FreeLongWanAttentionBlock(BaseWanAttentionBlock):
         sparse_k = k[:, :, key_frame_indices, :]
         sparse_v = v[:, :, key_frame_indices, :]
 
-        sim = torch.einsum('b h i d, b h j d -> b h i j', q, sparse_k) * self.self_attn.scale
-        attn = sim.softmax(dim=-1)
-        out = torch.einsum('b h i j, b h j d -> b h i d', attn, sparse_v)
-        return out
+        # Use chunked processing to avoid memory issues
+        b, h, s, d = q.shape
+        chunk_size = min(64, s)  # Process 64 queries at a time
+        outputs = []
+        
+        for i in range(0, s, chunk_size):
+            end_i = min(i + chunk_size, s)
+            q_chunk = q[:, :, i:end_i, :]
+            
+            # Compute attention for this chunk
+            sim = torch.einsum('b h i d, b h j d -> b h i j', q_chunk, sparse_k) * self.self_attn.scale
+            attn = sim.softmax(dim=-1)
+            out_chunk = torch.einsum('b h i j, b h j d -> b h i d', attn, sparse_v)
+            outputs.append(out_chunk)
+            
+            # Clear intermediate tensors
+            del sim, attn, out_chunk
+        
+        return torch.cat(outputs, dim=2)
 
     def _efficient_windowed_attention(self, q, k, v, window_size, device):
         """Memory-efficient windowed attention using chunking"""
