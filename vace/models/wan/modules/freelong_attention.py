@@ -85,7 +85,7 @@ class FreeLongWanAttentionBlock(BaseWanAttentionBlock):
         sparse_k = k[:, :, key_frame_indices, :]
         sparse_v = v[:, :, key_frame_indices, :]
 
-        sim = torch.einsum('b h i d, b h j d -> b h i j', q, sparse_k) * self.scale
+        sim = torch.einsum('b h i d, b h j d -> b h i j', q, sparse_k) * self.self_attn.scale
         attn = sim.softmax(dim=-1)
         out = torch.einsum('b h i j, b h j d -> b h i d', attn, sparse_v)
         return out
