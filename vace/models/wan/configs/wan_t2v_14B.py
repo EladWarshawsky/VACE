@@ -27,3 +27,4 @@ t2v_14B.window_size = (-1, -1)
 t2v_14B.qk_norm = True
 t2v_14B.cross_attn_norm = True
 t2v_14B.eps = 1e-6
+t2v_14B.native_video_length = 81

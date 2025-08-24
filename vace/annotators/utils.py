@@ -11,6 +11,18 @@ import imageio
 from PIL import Image
 import pycocotools.mask as mask_utils
 
+def get_default_device():
+    """
+    Automatically detects and returns the best available device.
+    Prioritizes CUDA, then MPS (for Apple Silicon), and defaults to CPU.
+    """
+    if torch.cuda.is_available():
+        return torch.device("cuda")
+    if torch.backends.mps.is_available():
+        # Note: PyTorch recommends against explicitly setting mps device index
+        return torch.device("mps")
+    return torch.device("cpu")
+
 
 
 def single_mask_to_rle(mask):

@@ -6,7 +6,7 @@ import numpy as np
 import torch
 from scipy import ndimage
 
-from .utils import convert_to_numpy, read_video_one_frame, single_mask_to_rle, single_rle_to_mask, single_mask_to_xyxy
+from .utils import convert_to_numpy, read_video_one_frame, single_mask_to_rle, single_rle_to_mask, single_mask_to_xyxy, get_default_device
 
 
 class SAM2ImageAnnotator:
@@ -25,7 +25,8 @@ class SAM2ImageAnnotator:
             os.makedirs(os.path.dirname(local_config_path), exist_ok=True)
             shutil.copy(config_path, local_config_path)
         pretrained_model = cfg['PRETRAINED_MODEL']
-        sam2_model = build_sam2(local_config_path, pretrained_model)
+        self.device = get_default_device() if device is None else torch.device(device)
+        sam2_model = build_sam2(local_config_path, pretrained_model).to(self.device)
         self.predictor = SAM2ImagePredictor(sam2_model)
         self.predictor.fill_hole_area = 0
 
@@ -113,7 +114,9 @@ class SAM2VideoAnnotator:
             os.makedirs(os.path.dirname(local_config_path), exist_ok=True)
             shutil.copy(config_path, local_config_path)
         pretrained_model = cfg['PRETRAINED_MODEL']
+        self.device = get_default_device() if device is None else torch.device(device)
         self.video_predictor = build_sam2_video_predictor(local_config_path, pretrained_model)
+        self.video_predictor.model.to(self.device)
         self.video_predictor.fill_hole_area = 0
 
     def forward(self,
@@ -166,7 +169,7 @@ class SAM2VideoAnnotator:
 
         ann_frame_idx = 0
         object_id = 0
-        with (torch.inference_mode(), torch.autocast("cuda", dtype=torch.bfloat16)):
+        with (torch.inference_mode(), torch.autocast(self.device.type, dtype=torch.bfloat16)):
 
             inference_state = self.video_predictor.init_state(video_path=video)
             if task_type in ['mask_point', 'mask_box', 'input_box']:
@@ -208,8 +211,9 @@ class SAM2SalientVideoAnnotator:
     def __init__(self, cfg, device=None):
         from .salient import SalientAnnotator
         from .sam2 import SAM2VideoAnnotator
-        self.salient_model = SalientAnnotator(cfg['SALIENT'], device=device)
-        self.sam2_model = SAM2VideoAnnotator(cfg['SAM2'], device=device)
+        self.device = get_default_device() if device is None else torch.device(device)
+        self.salient_model = SalientAnnotator(cfg['SALIENT'], device=self.device)
+        self.sam2_model = SAM2VideoAnnotator(cfg['SAM2'], device=self.device)
 
     def forward(self, video, image=None):
         if image is None:
@@ -225,8 +229,9 @@ class SAM2GDINOVideoAnnotator:
     def __init__(self, cfg, device=None):
         from .gdino import GDINOAnnotator
         from .sam2 import SAM2VideoAnnotator
-        self.gdino_model = GDINOAnnotator(cfg['GDINO'], device=device)
-        self.sam2_model = SAM2VideoAnnotator(cfg['SAM2'], device=device)
+        self.device = get_default_device() if device is None else torch.device(device)
+        self.gdino_model = GDINOAnnotator(cfg['GDINO'], device=self.device)
+        self.sam2_model = SAM2VideoAnnotator(cfg['SAM2'], device=self.device)
 
     def forward(self, video, image=None, classes=None, caption=None):
         if image is None:

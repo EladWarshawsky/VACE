@@ -178,6 +178,16 @@ def get_parser():
         type=float,
         default=5.0,
         help="Classifier free guidance scale.")
+    parser.add_argument(
+        "--use_freelong",
+        action="store_true",
+        default=False,
+        help="Enable FreeLong++ for long video generation.")
+    parser.add_argument(
+        "--freelong_config_json",
+        type=str,
+        default='{"native_video_length": 81, "long_video_scaling_factors": [1, 2, 4], "sparse_key_frame_ratio": 0.5}',
+        help="JSON string for FreeLong++ configuration.")
     return parser
 
 
@@ -271,6 +281,8 @@ def main(args):
         logging.info(f"Extended prompt: {args.prompt}")
 
     logging.info("Creating WanT2V pipeline.")
+    import json
+    freelong_config = json.loads(args.freelong_config_json) if args.use_freelong else None
     wan_vace = WanVace(
         config=cfg,
         checkpoint_dir=args.ckpt_dir,
@@ -280,6 +292,8 @@ def main(args):
         dit_fsdp=args.dit_fsdp,
         use_usp=(args.ulysses_size > 1 or args.ring_size > 1),
         t5_cpu=args.t5_cpu,
+        use_freelong=args.use_freelong,
+        freelong_config=freelong_config,
     )
 
     src_video, src_mask, src_ref_images = wan_vace.prepare_source([args.src_video],

@@ -10,6 +10,7 @@ import importlib
 
 from configs import VACE_PREPROCCESS_CONFIGS
 import annotators
+from annotators.utils import get_default_device
 from annotators.utils import read_image, read_mask, read_video_frames, save_one_video, save_one_image
 
 
@@ -213,7 +214,10 @@ def main(args):
                 input_data['mask_cfg'] = {"mode": args.maskaug_mode}
 
     # processing
-    pre_ins = getattr(annotators, class_name)(cfg=task_cfg, device=f'cuda:{os.getenv("RANK", 0)}')
+    device = get_default_device()
+    if device.type == 'cuda':
+        device = torch.device(f'cuda:{os.getenv("RANK", 0)}')
+    pre_ins = getattr(annotators, class_name)(cfg=task_cfg, device=device)
     results = pre_ins.forward(**input_data)
 
     # output data

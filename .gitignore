@@ -18,3 +18,10 @@ vace.egg-info
 *resources
 *.ipynb_checkpoints*
 *.vscode
+processed/
+*.mp4
+*.safetensors
+*.pt
+*.pth
+models/Wan2.1-VACE-1.3B/google/*
+models/Wan2.1-VACE-1.3B/config.json

@@ -8,7 +8,8 @@ import torch
 import numpy as np
 from .dwpose import util
 from .dwpose.wholebody import Wholebody, HWC3, resize_image
-from .utils import convert_to_numpy
+# from .base import BaseAnnotator
+from .utils import get_default_device, convert_to_numpy
 
 os.environ["KMP_DUPLICATE_LIB_OK"] = "TRUE"
 
@@ -36,7 +37,7 @@ class PoseAnnotator:
     def __init__(self, cfg, device=None):
         onnx_det = cfg['DETECTION_MODEL']
         onnx_pose = cfg['POSE_MODEL']
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
+        self.device = get_default_device() if device is None else device
         self.pose_estimation = Wholebody(onnx_det, onnx_pose, device=self.device)
         self.resize_size = cfg.get("RESIZE_SIZE", 1024)
         self.use_body = cfg.get('USE_BODY', True)

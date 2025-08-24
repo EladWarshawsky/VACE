@@ -5,7 +5,7 @@ import cv2
 import torch
 import numpy as np
 from torchvision.transforms import Normalize, Compose, Resize, ToTensor
-from .utils import convert_to_pil
+from .utils import convert_to_pil, get_default_device
 
 class RAMAnnotator:
     def __init__(self, cfg, device=None):
@@ -22,7 +22,7 @@ class RAMAnnotator:
         ram_checkpoint_path = cfg['PRETRAINED_MODEL']
         ram_type = cfg.get('RAM_TYPE', 'swin_l')
         self.return_lang = cfg.get('RETURN_LANG', ['en'])  # ['en', 'zh']
-        self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu") if device is None else device
+        self.device = get_default_device() if device is None else device
         self.model = ram_plus(pretrained=ram_checkpoint_path, image_size=image_size, vit=ram_type,
                               text_encoder_type=ram_tokenizer_path, delete_tag_index=delete_tag_index).eval().to(self.device)
         self.ram_transform = Compose([

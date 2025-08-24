@@ -24,8 +24,9 @@ from tqdm import tqdm
 from wan.text2video import (WanT2V, T5EncoderModel, WanVAE, shard_model, FlowDPMSolverMultistepScheduler,
                                get_sampling_sigmas, retrieve_timesteps, FlowUniPCMultistepScheduler)
 from .modules.model import VaceWanModel
+from .modules.freelong_utils import specmix_initialization
 from ..utils.preprocessor import VaceVideoProcessor
-
+from safetensors import safe_open
 
 class WanVace(WanT2V):
     def __init__(
@@ -38,6 +39,8 @@ class WanVace(WanT2V):
         dit_fsdp=False,
         use_usp=False,
         t5_cpu=False,
+        use_freelong=False, 
+        freelong_config=None,
     ):
         r"""
         Initializes the Wan text-to-video generation model components.
@@ -60,7 +63,7 @@ class WanVace(WanT2V):
             t5_cpu (`bool`, *optional*, defaults to False):
                 Whether to place T5 model on CPU. Only works without t5_fsdp.
         """
-        self.device = torch.device(f"cuda:{device_id}")
+        self.device = torch.device("cuda" if torch.cuda.is_available() else "mps" if getattr(torch.backends, "mps", None) and torch.backends.mps.is_available() else "cpu")
         self.config = config
         self.rank = rank
         self.t5_cpu = t5_cpu
@@ -83,8 +86,42 @@ class WanVace(WanT2V):
             vae_pth=os.path.join(checkpoint_dir, config.vae_checkpoint),
             device=self.device)
 
-        logging.info(f"Creating VaceWanModel from {checkpoint_dir}")
-        self.model = VaceWanModel.from_pretrained(checkpoint_dir)
+        logging.info(f"Creating VaceWanModel from config")
+        model_kwargs = {
+            'dim': config.dim,
+            'ffn_dim': config.ffn_dim,
+            'num_heads': config.num_heads,
+            'num_layers': config.num_layers,
+            'patch_size': config.patch_size,
+            'window_size': config.window_size,
+            'qk_norm': config.qk_norm,
+            'cross_attn_norm': config.cross_attn_norm,
+            'eps': config.eps,
+            # VACE context channels = latent(16 or 32 with masks) + mask features(64) -> 96 when masks are used
+            'vace_in_dim': 96,
+            'use_freelong': use_freelong,
+            'freelong_config': freelong_config,
+        }
+        self.model = VaceWanModel(**model_kwargs)
+
+        # Load weights
+        model_file = os.path.join(checkpoint_dir, 'diffusion_pytorch_model.safetensors')
+        if not os.path.exists(model_file):
+            raise IOError(f"Model file not found at {model_file}")
+            
+        state_dict = {}
+        with safe_open(model_file, framework="pt", device="cpu") as f:
+            for key in f.keys():
+                state_dict[key] = f.get_tensor(key)
+
+        missing, unexpected = self.model.load_state_dict(state_dict, strict=False)
+        logging.info(f"Loaded VaceWanModel weights with strict=False. Missing keys: {len(missing)}, Unexpected keys: {len(unexpected)}")
+        if len(unexpected) > 0:
+            logging.debug(f"Unexpected keys: {unexpected[:10]}{' ...' if len(unexpected)>10 else ''}")
+        if len(missing) > 0:
+            logging.debug(f"Missing keys sample: {missing[:10]}{' ...' if len(missing)>10 else ''}")
+
+        self.use_freelong = use_freelong # Store this for later use
         self.model.eval().requires_grad_(False)
 
         if use_usp:
@@ -342,16 +379,25 @@ class WanVace(WanT2V):
 
         target_shape = list(z0[0].shape)
         target_shape[0] = int(target_shape[0] / 2)
-        noise = [
-            torch.randn(
-                target_shape[0],
-                target_shape[1],
-                target_shape[2],
-                target_shape[3],
-                dtype=torch.float32,
-                device=self.device,
-                generator=seed_g)
-        ]
+        if hasattr(self, 'use_freelong') and self.use_freelong and target_shape[1] > self.config.get('native_video_length', 81):
+            logging.info("Using SpecMix noise initialization for FreeLong++.")
+            noise = [
+                specmix_initialization(
+                    (1, target_shape[0], target_shape[1], target_shape[2], target_shape[3]),
+                    device=self.device
+                ).squeeze(0)
+            ]
+        else:
+            noise = [
+                torch.randn(
+                    target_shape[0],
+                    target_shape[1],
+                    target_shape[2],
+                    target_shape[3],
+                    dtype=torch.float32,
+                    device=self.device,
+                    generator=seed_g)
+            ]
         seq_len = math.ceil((target_shape[2] * target_shape[3]) /
                             (self.patch_size[1] * self.patch_size[2]) *
                             target_shape[1] / self.sp_size) * self.sp_size
@@ -363,7 +409,9 @@ class WanVace(WanT2V):
         no_sync = getattr(self.model, 'no_sync', noop_no_sync)
 
         # evaluation mode
-        with amp.autocast(dtype=self.param_dtype), torch.no_grad(), no_sync():
+        with torch.no_grad(), \
+                     torch.autocast(device_type=self.device.type, dtype=self.param_dtype, enabled=(self.device.type in ['cuda', 'mps'])), \
+                     no_sync():
 
             if sample_solver == 'unipc':
                 sample_scheduler = FlowUniPCMultistepScheduler(
@@ -418,7 +466,8 @@ class WanVace(WanT2V):
             x0 = latents
             if offload_model:
                 self.model.cpu()
-                torch.cuda.empty_cache()
+                if torch.cuda.is_available():
+                    torch.cuda.empty_cache()
             if self.rank == 0:
                 videos = self.decode_latent(x0, input_ref_images)
 
@@ -426,7 +475,8 @@ class WanVace(WanT2V):
         del sample_scheduler
         if offload_model:
             gc.collect()
-            torch.cuda.synchronize()
+            if torch.cuda.is_available():
+                torch.cuda.synchronize()
         if dist.is_initialized():
             dist.barrier()
 
@@ -617,7 +667,9 @@ class WanVaceMP(WanVace):
                 no_sync = getattr(model, 'no_sync', noop_no_sync)
 
                 # evaluation mode
-                with amp.autocast(dtype=param_dtype), torch.no_grad(), no_sync():
+                with torch.no_grad(), \
+                     torch.autocast(device_type=self.device.type, dtype=self.param_dtype, enabled=(self.device.type in ['cuda', 'mps'])), \
+                     no_sync():
 
                     if sample_solver == 'unipc':
                         sample_scheduler = FlowUniPCMultistepScheduler(

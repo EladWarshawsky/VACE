@@ -5,6 +5,8 @@ import torch.cuda.amp as amp
 import torch.nn as nn
 from diffusers.configuration_utils import register_to_config
 from wan.modules.model import WanModel, WanAttentionBlock, sinusoidal_embedding_1d
+from .base_attention import BaseWanAttentionBlock
+from .freelong_attention import FreeLongWanAttentionBlock # Now this import is safe
 
 
 class VaceWanAttentionBlock(WanAttentionBlock):
@@ -37,34 +39,16 @@ class VaceWanAttentionBlock(WanAttentionBlock):
         else:
             all_c = list(torch.unbind(c))
             c = all_c.pop(-1)
-        c = super().forward(c, **kwargs)
-        c_skip = self.after_proj(c)
-        all_c += [c_skip, c]
+        # The parent now returns q, k, v, and the final processed tensor.
+        # We only need the final tensor for this block's logic.
+        _q, _k, _v, c_processed = super().forward(c, **kwargs)
+
+        c_skip = self.after_proj(c_processed)
+        all_c += [c_skip, c_processed]
         c = torch.stack(all_c)
         return c
     
     
-class BaseWanAttentionBlock(WanAttentionBlock):
-    def __init__(
-        self,
-        cross_attn_type,
-        dim,
-        ffn_dim,
-        num_heads,
-        window_size=(-1, -1),
-        qk_norm=True,
-        cross_attn_norm=False,
-        eps=1e-6,
-        block_id=None
-    ):
-        super().__init__(cross_attn_type, dim, ffn_dim, num_heads, window_size, qk_norm, cross_attn_norm, eps)
-        self.block_id = block_id
-
-    def forward(self, x, hints, context_scale=1.0, **kwargs):
-        x = super().forward(x, **kwargs)
-        if self.block_id is not None:
-            x = x + hints[self.block_id] * context_scale
-        return x
     
     
 class VaceWanModel(WanModel):
@@ -73,6 +57,8 @@ class VaceWanModel(WanModel):
                  vace_layers=None,
                  vace_in_dim=None,
                  model_type='t2v',
+                 use_freelong=False, 
+                 freelong_config=None,
                  patch_size=(1, 2, 2),
                  text_len=512,
                  in_dim=16,
@@ -98,10 +84,41 @@ class VaceWanModel(WanModel):
         self.vace_layers_mapping = {i: n for n, i in enumerate(self.vace_layers)}
 
         # blocks
+        self.use_freelong = use_freelong
+        if self.use_freelong:
+            if freelong_config is None:
+                freelong_config = {} # Use defaults if not provided
+            print("INFO: VaceWanModel is using FreeLongWanAttentionBlock for long video generation.")
+            AttentionBlockClass = FreeLongWanAttentionBlock
+            block_kwargs = {
+                "cross_attn_type": 't2v_cross_attn',
+                "dim": self.dim,
+                "ffn_dim": self.ffn_dim,
+                "num_heads": self.num_heads,
+                "window_size": self.window_size,
+                "qk_norm": self.qk_norm,
+                "cross_attn_norm": self.cross_attn_norm,
+                "eps": self.eps,
+                **freelong_config
+            }
+        else:
+            AttentionBlockClass = BaseWanAttentionBlock
+            block_kwargs = {
+                "cross_attn_type": 't2v_cross_attn',
+                "dim": self.dim,
+                "ffn_dim": self.ffn_dim,
+                "num_heads": self.num_heads,
+                "window_size": self.window_size,
+                "qk_norm": self.qk_norm,
+                "cross_attn_norm": self.cross_attn_norm,
+                "eps": self.eps,
+            }
+
         self.blocks = nn.ModuleList([
-            BaseWanAttentionBlock('t2v_cross_attn', self.dim, self.ffn_dim, self.num_heads, self.window_size, self.qk_norm,
-                                  self.cross_attn_norm, self.eps,
-                                  block_id=self.vace_layers_mapping[i] if i in self.vace_layers else None)
+            AttentionBlockClass(
+                block_id=self.vace_layers_mapping[i] if i in self.vace_layers else None,
+                **block_kwargs
+            )
             for i in range(self.num_layers)
         ])
 
@@ -195,11 +212,12 @@ class VaceWanModel(WanModel):
                       dim=1) for u in x
         ])
 
-        # time embeddings
-        with amp.autocast(dtype=torch.float32):
+        # time embeddings (force float32 for MPS/CUDA stability)
+        device_type = device.type
+        with torch.autocast(device_type=device_type, dtype=torch.float32, enabled=(device_type in ['cuda', 'mps'])):
             e = self.time_embedding(
-                sinusoidal_embedding_1d(self.freq_dim, t).float())
-            e0 = self.time_projection(e).unflatten(1, (6, self.dim))
+                sinusoidal_embedding_1d(self.freq_dim, t).float()).float()
+            e0 = self.time_projection(e).float().unflatten(1, (6, self.dim))
             assert e.dtype == torch.float32 and e0.dtype == torch.float32
 
         # context
