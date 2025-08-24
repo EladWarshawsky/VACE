@@ -2,6 +2,7 @@ import torch
 import argparse
 import importlib
 from typing import Dict, Any
+import torch 
 
 def load_parser(module_name: str) -> argparse.ArgumentParser:
     module = importlib.import_module(module_name)

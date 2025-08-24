@@ -7,6 +7,7 @@ import time
 import inspect
 import argparse
 import importlib
+import torch
 
 from configs import VACE_PREPROCCESS_CONFIGS
 import annotators
